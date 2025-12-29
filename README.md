@@ -1,2 +1,44 @@
-# CrazyAgent-AI-Assistant
-This project uses the CrazyAgent framework designed specifically for agents, primarily addressing the two major issues of tool invocation and dialogue memory.
+# DeepSeek科研助手 · AI Research Assistant
+
+一个基于 **CrazyAgent框架** 构建的智能科研助手，能够理解用户的研究意图，并自动调用文献综述、代码分析、研究计划、学术问答四大核心功能，为科研工作者提供全流程AI支持。
+
+## ✨ 核心功能
+
+本助手具备以下四大专业化功能模块，可根据用户问题意图自动选择调用：
+
+- **📚 文献综述助手**：根据研究主题，自动检索、总结并结构化相关学术文献的核心观点与发展脉络。
+- **💻 代码分析专家**：分析、解释科研代码（Python/R/Matlab等），提供优化建议，并解释复杂算法片段。
+- **📅 研究计划顾问**：协助制定清晰、可行的研究计划，包括问题定义、方法选择、时间规划与资源安排。
+- **❓ 学术问答引擎**：回答特定领域的学术概念、理论、方法问题，并提供可靠的参考资料线索。
+
+## 🛠️ 技术栈
+
+- **框架**: CrazyAgent (智能体编排框架)
+- **核心LLM**: DeepSeek系列模型 (或您实际使用的模型，如 `deepseek-chat`)
+- **工具调用**: 基于框架的意图识别与工具路由机制
+- **后端/环境**: Python 3.9+, 相关科研工具库 (如 `arXiv` API, `PyMuPDF`, `SymPy`等)
+- **项目管理**: Git, pip
+
+## 🧠 核心架构与工作流程
+
+本项目是一个典型的**多工具智能体（Multi-Tool Agent）**。其核心在于“意图识别”与“工具路由”，而非单一的问答流程。
+
+### 智能体工作流程
+
+```mermaid
+graph LR
+    A[用户输入研究问题] --> B[意图识别模块];
+    B --> C{判断问题类型};
+    
+    C -->|文献相关| D[调用文献综述工具];
+    C -->|代码相关| E[调用代码分析工具];
+    C -->|计划相关| F[调用研究计划工具];
+    C -->|概念/理论| G[调用学术问答工具];
+    
+    D --> H[获取并处理外部知识<br>如：arXiv API];
+    E --> I[分析代码与逻辑];
+    F --> J[规划结构与资源];
+    G --> K[检索内部知识库];
+    
+    H & I & J & K --> L[生成格式化的专业回答];
+    L --> M[输出最终结果给用户];
