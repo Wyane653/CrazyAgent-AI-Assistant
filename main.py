@@ -5,6 +5,7 @@ DeepSeek智能科研引擎 - 最终版
 """
 
 import os
+from dotenv import load_dotenv # 新增这行
 import sys
 import json
 import time
@@ -12,6 +13,8 @@ import asyncio
 import random
 from datetime import datetime
 from typing import Dict, Any
+
+load_dotenv() # 新增这行，用于加载 .env 文件
 
 
 # 检查并安装依赖
@@ -38,28 +41,72 @@ Deepseek, Memory, SystemMessage, crazy_tool, Argument = check_deps()
 
 # ========== 配置 (您的API密钥已在此处) ==========
 class Config:
-    DEEPSEEK_API_KEY = "sk-befc1f2f948043ee8f61ab8a067ce45c"  # 您的密钥
+    # 从名为 "DEEPSEEK_API_KEY" 的环境变量中读取密钥
+    # 如果读取不到，则返回 None，程序会报错，这能提醒你正确设置
+    DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
+    if not DEEPSEEK_API_KEY:
+        raise ValueError("❌ 错误：未设置环境变量 'DEEPSEEK_API_KEY'。请按照README进行配置。")
 
 
 # ========== 三大核心工具 ==========
 class ResearchTools:
     _llm = None
+    # 新增：用于防止工具函数在同一流程中重复执行核心逻辑的标志
+    _tool_execution_flag = {}
 
     @classmethod
     def init(cls, llm):
         cls._llm = llm
 
+        # ========== 新增：学术问答工具 ==========
+    @staticmethod
+    @crazy_tool
+    def academic_qa(concept: str = Argument("学术概念", required=True)) -> Dict[str, Any]:
+        """解释学术概念、术语或技术"""
+        print(f"[工具] 学术问答: {concept}")
+        prompt = f"""请对以下学术概念或技术进行清晰、准确、全面的解释：
+        概念：“{concept}”
+        请按以下结构组织内容：
+        1. **基本定义**：用一句话精炼概括。
+        2. **核心原理**：阐述其工作原理或核心思想。
+        3. **主要应用**：列举2-3个典型应用场景。
+        4. **意义与挑战**：简要说明其重要性及当前面临的挑战或未来方向。
+        请确保解释专业且易于理解。"""
+        try:
+            resp = ResearchTools._llm.invoke(prompt)
+            return {"status": "success", "concept": concept, "content": resp.content}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
     @staticmethod
     @crazy_tool
     def literature_review(topic: str = Argument("主题", required=True)) -> Dict[str, Any]:
         """生成文献综述"""
+        # --- 新增：检查执行标记 ---
+        # 为当前工具创建一个唯一标识，例如使用主题的前几个字符
+        flag_key = f"literature_review_{topic[:20]}"
+        if ResearchTools._tool_execution_flag.get(flag_key):
+            print(f"[调试] 检测到 literature_review 重复调用，已跳过核心逻辑。")
+            # 可以返回一个空结果或上一次的结果，这里返回一个跳过标记
+            return {"status": "skipped", "note": "重复调用已跳过"}
+        # 设置标记，表示正在/已经执行
+        ResearchTools._tool_execution_flag[flag_key] = True
+        # --- 新增结束 ---
+
         print(f"[工具] 文献综述: {topic}")
         prompt = f"请为研究主题'{topic}'撰写一篇结构完整的文献综述，包含背景、方法、近期进展和未来挑战。"
         try:
             resp = ResearchTools._llm.invoke(prompt)
             return {"status": "success", "topic": topic, "content": resp.content}
         except Exception as e:
+            # 新增：打印具体是什么错误
+            # print(f"[文献综述工具错误] 调用LLM失败：{e}")
             return {"status": "error", "error": str(e)}
+        finally:
+            # --- 新增：可选地，在处理完成后清除标记，但通常一次会话中不需要 ---
+            # ResearchTools._tool_execution_flag[flag_key] = False
+            pass
+        return result
 
     @staticmethod
     @crazy_tool
@@ -97,54 +144,82 @@ class ResearchAgent:
         )
         self.history = []
 
+
     async def process(self, query: str) -> Dict[str, Any]:
         """处理用户查询"""
         print(f"\n> 处理: {query[:50]}...")
         start = time.time()
 
-        # 1. 分析意图
-        tools_to_use = []
-        if any(k in query for k in ["文献", "综述", "调研"]):
-            tools_to_use.append(("literature_review", query[:30]))
-        if any(k in query for k in ["代码", "程序", "编程", "bug"]):
-            tools_to_use.append(("code_analysis", query))
-        if any(k in query for k in ["计划", "方案", "项目"]):
-            tools_to_use.append(("research_plan", query[:30]))
-
-        # 2. 调用工具
+        # 初始化结果字典
         results = {}
-        for tool_name, arg in tools_to_use:
-            if tool_name == "literature_review":
-                results[tool_name] = ResearchTools.literature_review(topic=arg)
-            elif tool_name == "code_analysis":
-                results[tool_name] = ResearchTools.code_analysis(code=arg)
-            elif tool_name == "research_plan":
-                results[tool_name] = ResearchTools.research_plan(project=arg)
-
-        # 3. 生成最终回答
-        if results:
-            prompt = f"用户问：{query}\n\n工具分析结果：{json.dumps(results, ensure_ascii=False)}\n请整合以上信息，给出专业回答。"
-        else:
-            prompt = query
+        tools_used = []
 
         try:
-            response = self.llm.invoke(prompt)
-            final = response.content
-        except Exception as e:
-            final = f"生成回答时出错：{e}"
+            # 1. 分析意图
+            tools_to_use = []
+            if any(k in query for k in ["文献", "综述", "调研"]):
+                tools_to_use.append(("literature_review", query[:30]))
+            # 新增：学术问答意图识别
+            if any(k in query for k in
+                   ["什么是", "什么是", "解释", "定义", "简述", "介绍", "含义", "什么意思", "为何", "为什么"]):
+                tools_to_use.append(("academic_qa", query))
+            if any(k in query for k in ["代码", "程序", "编程", "bug", "错误"]):
+                tools_to_use.append(("code_analysis", query))
+            if any(k in query for k in ["计划", "方案", "项目", "规划"]):
+                tools_to_use.append(("research_plan", query[:30]))
 
-        # 记录
+            # 2. 调用工具
+            for tool_name, arg in tools_to_use:
+                try:
+                    if tool_name == "literature_review":
+                        results[tool_name] = ResearchTools.literature_review(topic=arg)
+                    elif tool_name == "academic_qa":  # 新增调用分支
+                        results[tool_name] = ResearchTools.academic_qa(concept=arg)
+                    elif tool_name == "code_analysis":
+                        results[tool_name] = ResearchTools.code_analysis(code=arg)
+                    elif tool_name == "research_plan":
+                        results[tool_name] = ResearchTools.research_plan(project=arg)
+                    tools_used.append(tool_name)
+                except Exception as e:
+                    print(f"[警告] 调用工具 {tool_name} 时出错: {e}")
+                    results[tool_name] = {"status": "error", "error": str(e)}
+
+            # 3. 生成最终回答
+            if results:
+                prompt = f"用户问：{query}\n\n工具分析结果：{json.dumps(results, ensure_ascii=False)}\n请整合以上信息，给出专业回答。"
+            else:
+                prompt = query
+
+            try:
+                response = self.llm.invoke(prompt)
+                final = response.content
+            except Exception as e:
+                final = f"生成回答时出错：{e}"
+                print(f"[警告] 调用AI模型失败: {e}")
+
+        except Exception as e:
+            # 捕获process方法中任何其他未预料到的错误
+            import traceback
+            error_detail = traceback.format_exc()
+            print(f"[严重错误] process执行过程异常: {e}")
+            print(f"错误详情:\n{error_detail}")
+            final = f"处理请求时发生系统错误：{e}"
+            # 可以选择返回一个表示失败的结果
+            # 这里我们依然返回一个结构，但标记为失败
+
+        # 记录历史
         self.history.append({
             "query": query,
             "response": final[:100],
             "time": time.time() - start
         })
 
+        # 始终返回一个结构化的字典，即使出错
         return {
-            "success": True,
+            "success": '出错' not in final,  # 简单判断是否出错
             "query": query,
             "response": final,
-            "tools_used": [t[0] for t in tools_to_use],
+            "tools_used": tools_used,
             "time_cost": round(time.time() - start, 2)
         }
 
@@ -172,7 +247,9 @@ async def main():
                 print(f"系统正常 | 历史问题数：{len(agent.history)}")
                 continue
 
-            result = await agent.process(user_input)
+            result = await agent.process(user_input)  # 假设这是第296行
+
+            # 这是您期望执行的输出代码块 (假设是第300行开始)
             print(f"\n【回答】({result['time_cost']}秒)：")
             print("-" * 50)
             print(result["response"])
@@ -184,13 +261,23 @@ async def main():
             print("\n程序中断。")
             break
         except Exception as e:
-            print(f"错误：{e}")
+            print(f"\n[主循环捕获到未处理的异常]：{e}")
+            continue
 
 
 # ========== 程序入口 ==========
 if __name__ == "__main__":
+    # 启动前检查关键环境变量
+    if not os.environ.get("DEEPSEEK_API_KEY"):
+        print("⚠️  提示：请先设置环境变量 'DEEPSEEK_API_KEY'")
+        print("Linux/Mac: export DEEPSEEK_API_KEY='您的密钥'")
+        print("Windows: set DEEPSEEK_API_KEY=您的密钥")
+        print("或者在 '.env' 文件中设置。")
+        exit(1)
     print("启动DeepSeek科研助手...")
     asyncio.run(main())
+    # print("启动DeepSeek科研助手...")
+    # asyncio.run(main())
 
 # """
 # 基于 CrazyAgent 框架的 AI 个人助手
